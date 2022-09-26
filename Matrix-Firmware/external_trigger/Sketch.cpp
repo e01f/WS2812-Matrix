@@ -27,7 +27,7 @@ Adafruit_NeoMatrix neoMatrix = Adafruit_NeoMatrix(16, 11, LED_PIN, NEO_MATRIX_TO
 enum sysState_e {SYS_INIT, SYS_SHOWCAPTION, SYS_SHOWCAPTION_WAIT, SYS_INFO, SYS_INFO_WAIT, SYS_INFO_DRAW, SYS_ANI_WAIT, SYS_ANI};
 typedef enum sysState_e sysState_t;
 
-enum aniState_e {ANI_OFF, ANI1, ANI2, ANI3, ANI_MODE_NUM};
+enum aniState_e {ANI_OFF, ANI1, ANI2, ANI3, ANI4, ANI_MODE_NUM};
 typedef enum aniState_e aniState_t;
 
 unsigned long last_trigger = 0;
@@ -59,10 +59,14 @@ sysState_t sysState;
 aniState_t aniState;
 
 int ani_trg_count = 0;
+int last_ani_trg_count = 0;
 int aniColorIndex = 1;
 uint16_t aniColor = 0x0FF0DD;
 uint16_t aniParams[6];
 uint16_t lastAniParams[6];
+
+double ballStartY = 5.0;
+double ballTargetY = 6.0;
 
 const double trigger_factor = 0.7;
 
@@ -210,6 +214,10 @@ inline void saveAniParams(uint16_t param1, uint16_t param2, uint16_t param3, uin
 	aniParams[5] = param5;
 }
 
+inline void saveAniParams(uint16_t param1, uint16_t param2, uint16_t param3) {
+	saveAniParams(param1, param2, param3, 0xFFFF, 0xFFFF);
+}
+
 inline void saveAniParams(uint16_t param) {
 	saveAniParams(param, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF);
 }
@@ -221,11 +229,17 @@ inline void saveAniState() {
 inline void runAnimations() {
 	double span;
 	double relVal;
+
+	uint16_t oldAniColor;
+
+	double ballProgress;
 	
 	span = avg_max - avg_min;
 	relVal = min(1.0, abs(avgAnalog - sample) * 2.0 / span);
 	
 	neoMatrix.fillScreen(0);
+	
+
 	
 	switch (aniState) {
 		case ANI1:
@@ -246,7 +260,7 @@ inline void runAnimations() {
 			break;
 		case ANI3:
 			// mini squares, alternating colors
-			uint16_t oldAniColor = aniColor;
+			oldAniColor = aniColor;
 			for (int x = 0; x < neoMatrix.width(); x += 3) {
 				for (int y = 0; y < neoMatrix.height(); y += 3) {
 					neoMatrix.fillRect(x, y, 3, 3, aniColor);
@@ -255,6 +269,34 @@ inline void runAnimations() {
 			}
 			aniColor = oldAniColor;
 			saveAniParams(aniColor);
+			break;
+		case ANI4:
+			// Pong-like animation, ball hits when average-of-four trigger is expected next
+			// Expect next trigger at: last_trigger + avg_trigger_interval
+			if (last_ani_trg_count != ani_trg_count) {
+				last_ani_trg_count = ani_trg_count;
+				// reverse, so mirror start or target
+				if (ani_trg_count % 2) {
+					ballTargetY = ballTargetY + (ballStartY - ballTargetY) * 2.0;
+					ballTargetY = max(ballTargetY, 1.0);
+					ballTargetY = min(ballTargetY, 9.0);
+				} else {
+					ballStartY = ballStartY + (ballStartY - ballTargetY) * 2.0;
+					ballStartY = max(ballStartY, 1.0);
+					ballStartY = min(ballStartY, 9.0);
+				}
+			}
+			// Net
+			neoMatrix.drawFastVLine(7, 0, neoMatrix.height(), neoMatrix.Color(100, 100, 100));
+			neoMatrix.drawFastVLine(8, 0, neoMatrix.height(), neoMatrix.Color(100, 100, 100));
+			// Players
+			neoMatrix.drawLine(0, round(ballStartY - 1), 0, round(ballStartY + 1), neoMatrix.Color(255, 255, 255));
+			neoMatrix.drawLine(15, round(ballTargetY - 1), 15, round(ballTargetY + 1), neoMatrix.Color(255, 255, 255));
+			// Ball
+			ballProgress = ((last_trigger + avg_trigger_interval) - now) / ((double) avg_trigger_interval);
+			if (ani_trg_count % 2) ballProgress = 1.0 - ballProgress;
+			neoMatrix.drawPixel(round(15.0 * ballProgress), round(ballStartY + (ballTargetY - ballStartY) * ballProgress), aniColor);
+			saveAniParams(round(15.0 * ballProgress), round(ballStartY + (ballTargetY - ballStartY) * ballProgress), aniColor);
 			break;
 	}
 	saveAniState();
