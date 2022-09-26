@@ -61,6 +61,8 @@ aniState_t aniState;
 int ani_trg_count = 0;
 int aniColorIndex = 1;
 uint16_t aniColor = 0x0FF0DD;
+uint16_t aniParams[6];
+uint16_t lastAniParams[6];
 
 const double trigger_factor = 0.7;
 
@@ -148,9 +150,31 @@ inline void sampleInput() {
 	//Serial.println(avgAnalog);
 }
 
+inline bool _compareAniParams(uint16_t *current, uint16_t *last, int length, bool aggResult) {
+	aggResult &= *current == *last;
+	if (length <= 1) return aggResult;
+	return _compareAniParams(current + 1, last + 1, length - 1, aggResult);
+}
+
+inline bool compareAniParams(uint16_t *current, uint16_t *last, int length) {
+	return _compareAniParams(current, last, length, true);
+}
+
+inline bool screenUpdateRequired() {
+	// Diagnostic state, no need to cut down on updates
+	if (sysState != SYS_ANI && sysState != SYS_ANI_WAIT) return true;
+	// aniParams != lastAniParams
+	return !compareAniParams(aniParams, lastAniParams, sizeof(aniParams) / sizeof(aniParams[0]));
+}
+
 inline void refreshScreen() {
-	// redraw each 30 ms (approx. 30 fps)
-	neoMatrix.show();
+	// redraw each 30 ms (approx. 30 fps), whenever this is needed
+	if (screenUpdateRequired()) {
+		neoMatrix.show();
+		for (int i = 0; i < sizeof(aniParams) / sizeof(aniParams[0]); i++) {
+			lastAniParams[i] = aniParams[i];
+		}
+	}
 }
 
 void advanceAniColor() {
@@ -178,6 +202,22 @@ void advanceAniColor() {
 	aniColorIndex++;
 }
 
+inline void saveAniParams(uint16_t param1, uint16_t param2, uint16_t param3, uint16_t param4, uint16_t param5) {
+	aniParams[1] = param1;
+	aniParams[2] = param2;
+	aniParams[3] = param3;
+	aniParams[4] = param4;
+	aniParams[5] = param5;
+}
+
+inline void saveAniParams(uint16_t param) {
+	saveAniParams(param, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF);
+}
+
+inline void saveAniState() {
+	aniParams[0] = aniState;
+}
+
 inline void runAnimations() {
 	double span;
 	double relVal;
@@ -189,18 +229,20 @@ inline void runAnimations() {
 	
 	switch (aniState) {
 		case ANI1:
-			// rect, size proportional to sound level
+			// bars that arrange to sound triggers
 			if (ani_trg_count > neoMatrix.width()) {
 				ani_trg_count = 0;
 			}
 			for (int i = 0; i < ani_trg_count; i++) {
 				neoMatrix.drawFastVLine(i, 0, neoMatrix.height(), neoMatrix.Color(255, 255, 255));
 			}
-			//neoMatrix.drawRect(round(8.0 - relVal * 8.0), round(5.5 - relVal * 5.5), round(relVal * 16.0), round(relVal * 11.0), neoMatrix.Color(255, 255, 255));
+			saveAniParams(ani_trg_count);
 			break;
 		case ANI2:
 			// filled rect, size proportional to sound level
+			//neoMatrix.drawRect(round(8.0 - relVal * 8.0), round(5.5 - relVal * 5.5), round(relVal * 16.0), round(relVal * 11.0), neoMatrix.Color(255, 255, 255));
 			neoMatrix.fillRect(round(8.0 - relVal * 8.0), round(5.5 - relVal * 5.5), round(relVal * 16.0), round(relVal * 11.0), aniColor);
+			saveAniParams(round(8.0 - relVal * 8.0), round(5.5 - relVal * 5.5), round(relVal * 16.0), round(relVal * 11.0), aniColor);
 			break;
 		case ANI3:
 			// mini squares, alternating colors
@@ -212,8 +254,10 @@ inline void runAnimations() {
 				}
 			}
 			aniColor = oldAniColor;
+			saveAniParams(aniColor);
 			break;
 	}
+	saveAniState();
 }
 
 inline void printDebugInfo() {
