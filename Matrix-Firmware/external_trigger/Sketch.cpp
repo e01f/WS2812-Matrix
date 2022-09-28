@@ -30,6 +30,20 @@ typedef enum sysState_e sysState_t;
 enum aniState_e {ANI_OFF, ANI1, ANI2, ANI3, ANI4, ANI_MODE_NUM};
 typedef enum aniState_e aniState_t;
 
+struct pointXY_s {
+	double x;
+	double y;
+};
+typedef struct pointXY_s pointXY_t;
+
+struct ballVector_s {
+	pointXY_t start;
+	double angle;
+	double k;
+	uint8_t quadrant;
+};
+typedef struct ballVector_s ballVector_t;
+
 unsigned long last_trigger = 0;
 unsigned long last_sample = 0;
 unsigned long last_draw = 0;
@@ -65,8 +79,12 @@ uint16_t aniColor = 0x0FF0DD;
 uint16_t aniParams[6];
 uint16_t lastAniParams[6];
 
-double ballStartY = 5.0;
-double ballTargetY = 6.0;
+double ballLeftY = 5.0;
+double ballRightY = 6.0;
+double paddleHitOffset = 0.0;
+ballVector_t ball;
+pointXY_t collision1;
+pointXY_t collision2;
 
 const double trigger_factor = 0.7;
 
@@ -226,6 +244,69 @@ inline void saveAniState() {
 	aniParams[0] = aniState;
 }
 
+double euclidDist(pointXY_t a, pointXY_t b) {
+	return sqrt(sq(a.x - b.x) + sq(a.y - b.y));
+}
+
+double intersectBallVector(ballVector_t v, double y) {
+	// intersect ball vector horizontally at y
+	return (y - v.start.y + v.k * v.start.x) / v.k;
+}
+
+ballVector_t ballVector(pointXY_t p, double angle) {
+	// create new ball vector from p at horz. angle angle
+	ballVector_t newBall;
+	newBall.start.x = p.x;
+	newBall.start.y = p.y;
+	newBall.angle = angle;
+	
+	// angle is to the left, from right horizon
+	if (angle < HALF_PI) newBall.quadrant = 1
+	else if (angle < PI) newBall.quadrant = 2
+	else if (angle < PI + HALF_PI) newBall.quadrant = 3;
+	else newBall.quadrant = 4;
+	
+	// k > 0 rising, k < 0 falling
+	newBall.k = tan(angle);
+	
+	return newBall;
+}
+
+inline pointXY_t ballPath(double progess) {
+	// return ball path along progress, 1 being right, 0 being left
+	if (ball.angle == 0 || ball.angle == PI) {
+		// special case 90 degrees, intersect is infinity
+		return {round(15.0 * ballProgress), ball.start.y};
+	}
+	double pathLength = 0.0;
+	ballVector_t particle = ball;
+	pointXY_t intersectPoint;
+	do {
+		double mirror = 0.0;
+		intersectPoint = {0.0, 0.0};
+		switch (particle.quadrant) {
+			case 1:
+			case 2:
+				// upper left or right
+				intersectPoint.y = 0;
+				break;
+			case 3:
+			case 4:
+				// lower left or right
+				intersectPoint.y = 15;
+				break;
+		}
+		intersectPoint.x = intersectBallVector(particle, intersectPoint.y);
+		// todo path length is distance to vert. edge of field only!
+		pathLength += euclidDist(particle.start, intersectPoint);
+		// at intersection, calculate bounce by mirroring vertically (180 - angle)
+		particle = ballVector(intersectPoint, PI - particle.angle);
+	} while (intersectPoint.x >= 0.0 && intersectPoint.x <= 15.0);
+	// todo maybe add caching, calculate this only once
+	
+	
+}
+
 inline void runAnimations() {
 	double span;
 	double relVal;
@@ -274,29 +355,38 @@ inline void runAnimations() {
 			// Pong-like animation, ball hits when average-of-four trigger is expected next
 			// Expect next trigger at: last_trigger + avg_trigger_interval
 			if (last_ani_trg_count != ani_trg_count) {
+				// A trigger has happened since the last time
 				last_ani_trg_count = ani_trg_count;
 				// reverse, so mirror start or target
+				
+				
+				
+				paddleHitOffset = (-1.0 + ((double) random(20)) / 10.0);
 				if (ani_trg_count % 2) {
-					ballTargetY = ballTargetY + (ballStartY - ballTargetY) * 2.0;
-					ballTargetY = max(ballTargetY, 1.0);
-					ballTargetY = min(ballTargetY, 9.0);
+					// was right-to-left, reverse; rightY changes
+					ballRightY = ballRightY + (ballLeftY - ballRightY) * 2.0;
+					ballRightY = max(ballRightY, 1.0);
+					ballRightY = min(ballRightY, 9.0);
 				} else {
-					ballStartY = ballStartY + (ballStartY - ballTargetY) * 2.0;
-					ballStartY = max(ballStartY, 1.0);
-					ballStartY = min(ballStartY, 9.0);
+					// was left-to-right, reverse; leftY changes
+					ballLeftY = ballLeftY + (ballRightY - ballLeftY) * 2.0;
+					ballLeftY = max(ballLeftY, 1.0);
+					ballLeftY = min(ballLeftY, 9.0);
 				}
 			}
 			// Net
 			neoMatrix.drawFastVLine(7, 0, neoMatrix.height(), neoMatrix.Color(100, 100, 100));
 			neoMatrix.drawFastVLine(8, 0, neoMatrix.height(), neoMatrix.Color(100, 100, 100));
 			// Players
-			neoMatrix.drawLine(0, round(ballStartY - 1), 0, round(ballStartY + 1), neoMatrix.Color(255, 255, 255));
-			neoMatrix.drawLine(15, round(ballTargetY - 1), 15, round(ballTargetY + 1), neoMatrix.Color(255, 255, 255));
+			neoMatrix.drawLine(0, round(ballLeftY - 1), 0, round(ballLeftY + 1), neoMatrix.Color(255, 255, 255));
+			neoMatrix.drawLine(15, round(ballRightY - 1), 15, round(ballRightY + 1), neoMatrix.Color(255, 255, 255));
 			// Ball
+			// ballProgress is left-to-right (0.0 = left, 1.0 = right)
 			ballProgress = ((last_trigger + avg_trigger_interval) - now) / ((double) avg_trigger_interval);
 			if (ani_trg_count % 2) ballProgress = 1.0 - ballProgress;
-			neoMatrix.drawPixel(round(15.0 * ballProgress), round(ballStartY + (ballTargetY - ballStartY) * ballProgress), aniColor);
-			saveAniParams(round(15.0 * ballProgress), round(ballStartY + (ballTargetY - ballStartY) * ballProgress), aniColor);
+			
+			neoMatrix.drawPixel(round(15.0 * ballProgress), round(ballLeftY + (ballRightY - ballLeftY) * ballProgress), aniColor);
+			saveAniParams(round(15.0 * ballProgress), round(ballLeftY + (ballRightY - ballLeftY) * ballProgress), aniColor);
 			break;
 	}
 	saveAniState();
