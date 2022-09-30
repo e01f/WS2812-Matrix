@@ -12,6 +12,7 @@
 
 void advanceAniColor();
 double approxRollingAverage(double avg, double new_sample, double N);
+bool calculateBallPath();
 
 // Parameter 1 = number of pixels in strip
 // Parameter 2 = Arduino pin number (most are valid)
@@ -38,11 +39,18 @@ typedef struct pointXY_s pointXY_t;
 
 struct ballVector_s {
 	pointXY_t start;
-	double angle;
 	double k;
+	pointXY_t v;
 	uint8_t quadrant;
+	double angle;
 };
 typedef struct ballVector_s ballVector_t;
+
+struct waypoint_s {
+	double distance;
+	ballVector_t bV;	
+};
+typedef struct waypoint_s waypoint_t;
 
 unsigned long last_trigger = 0;
 unsigned long last_sample = 0;
@@ -83,10 +91,14 @@ double ballLeftY = 5.0;
 double ballRightY = 6.0;
 double paddleHitOffset = 0.0;
 ballVector_t ball;
-pointXY_t collision1;
-pointXY_t collision2;
+pointXY_t ballPos;
+// start -> [top/bottom 1 -> [top/bottom 2 ->]] sidewall
+waypoint_t ballPath[4];
+uint8_t ballPathLength;
 
 const double trigger_factor = 0.7;
+
+ballVector_t ballVector(pointXY_t p, double angle);
 
 void setup() {
 	now = millis();
@@ -105,15 +117,21 @@ void setup() {
 	lastStateChange = now;
 	strcpy_P(caption1, PSTR("Init"));
 	strcpy_P(caption2, PSTR("v1.1"));
+	
+	ballPathLength = 1;
+	ballPath[0].distance = 0.0;
+	ballPath[0].bV = ballVector({0, 4}, radians(-5.0));
+		
+	ball = ballPath[0].bV;
 }
 
-inline double approxRollingAverage(double avg, double new_sample, double N) {
+double approxRollingAverage(double avg, double new_sample, double N) {
 	avg -= avg / N;
 	avg += new_sample / N;
 	return avg;
 }
 
-inline void handleButton() {
+void handleButton() {
 	if (now - last_btn_evt > 100) {
 		int pb = digitalRead(3);
 		if (pb != button_state) {
@@ -139,7 +157,7 @@ inline void handleButton() {
 	}
 }
 
-inline void handleTrigger() {
+void handleTrigger() {
 	int trigger_interval = now - last_trigger;
 	if (trigger_interval > 150) {
 		double local_trigger_factor = trigger_factor;
@@ -156,7 +174,7 @@ inline void handleTrigger() {
 	}
 }
 
-inline void computeMinMax() {
+void computeMinMax() {
 	// conservative: +/-120 to avoid spurious triggers
 	avg_min = min(approxRollingAverage(avg_min, min_sample, 4), avgAnalog - 300.0);
 	avg_max = max(approxRollingAverage(avg_max, max_sample, 4), avgAnalog + 300.0);
@@ -164,7 +182,7 @@ inline void computeMinMax() {
 	max_sample = 0;
 }
 
-inline void sampleInput() {
+void sampleInput() {
 	sample = analogRead(ANALOG_PIN);
 	avgAnalog = approxRollingAverage(avgAnalog, sample, 1000);
 	min_sample = min(min_sample, sample);
@@ -172,24 +190,24 @@ inline void sampleInput() {
 	//Serial.println(avgAnalog);
 }
 
-inline bool _compareAniParams(uint16_t *current, uint16_t *last, int length, bool aggResult) {
+bool _compareAniParams(uint16_t *current, uint16_t *last, int length, bool aggResult) {
 	aggResult &= *current == *last;
 	if (length <= 1) return aggResult;
 	return _compareAniParams(current + 1, last + 1, length - 1, aggResult);
 }
 
-inline bool compareAniParams(uint16_t *current, uint16_t *last, int length) {
+bool compareAniParams(uint16_t *current, uint16_t *last, int length) {
 	return _compareAniParams(current, last, length, true);
 }
 
-inline bool screenUpdateRequired() {
+bool screenUpdateRequired() {
 	// Diagnostic state, no need to cut down on updates
 	if (sysState != SYS_ANI && sysState != SYS_ANI_WAIT) return true;
 	// aniParams != lastAniParams
 	return !compareAniParams(aniParams, lastAniParams, sizeof(aniParams) / sizeof(aniParams[0]));
 }
 
-inline void refreshScreen() {
+void refreshScreen() {
 	// redraw each 30 ms (approx. 30 fps), whenever this is needed
 	if (screenUpdateRequired()) {
 		neoMatrix.show();
@@ -224,7 +242,7 @@ void advanceAniColor() {
 	aniColorIndex++;
 }
 
-inline void saveAniParams(uint16_t param1, uint16_t param2, uint16_t param3, uint16_t param4, uint16_t param5) {
+void saveAniParams(uint16_t param1, uint16_t param2, uint16_t param3, uint16_t param4, uint16_t param5) {
 	aniParams[1] = param1;
 	aniParams[2] = param2;
 	aniParams[3] = param3;
@@ -232,25 +250,40 @@ inline void saveAniParams(uint16_t param1, uint16_t param2, uint16_t param3, uin
 	aniParams[5] = param5;
 }
 
-inline void saveAniParams(uint16_t param1, uint16_t param2, uint16_t param3) {
+void saveAniParams(uint16_t param1, uint16_t param2, uint16_t param3) {
 	saveAniParams(param1, param2, param3, 0xFFFF, 0xFFFF);
 }
 
-inline void saveAniParams(uint16_t param) {
+void saveAniParams(uint16_t param) {
 	saveAniParams(param, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF);
 }
 
-inline void saveAniState() {
+void saveAniState() {
 	aniParams[0] = aniState;
+}
+
+bool isPointInMatrix(pointXY_t p) {
+	if (p.x < 0) return false;
+	if (p.x > neoMatrix.width() - 1) return false;
+	if (p.y < 0) return false;
+	if (p.y > neoMatrix.height() - 1) return false;
+	return true;
 }
 
 double euclidDist(pointXY_t a, pointXY_t b) {
 	return sqrt(sq(a.x - b.x) + sq(a.y - b.y));
 }
 
-double intersectBallVector(ballVector_t v, double y) {
+ballVector_t yIntersectBallVector(ballVector_t v, pointXY_t intersectPoint) {
 	// intersect ball vector horizontally at y
-	return (y - v.start.y + v.k * v.start.x) / v.k;
+	intersectPoint.x = (intersectPoint.y - v.start.y + v.k * v.start.x) / v.k;
+	return ballVector(intersectPoint, TWO_PI - v.angle);
+}
+
+ballVector_t xIntersectBallVector(ballVector_t v, pointXY_t intersectPoint) {
+	// intersect ball vector vertically at x
+	intersectPoint.y = intersectPoint.x * v.k - v.k * v.start.x + v.start.y;
+	return ballVector(intersectPoint, PI - v.angle);
 }
 
 ballVector_t ballVector(pointXY_t p, double angle) {
@@ -261,53 +294,138 @@ ballVector_t ballVector(pointXY_t p, double angle) {
 	newBall.angle = angle;
 	
 	// angle is to the left, from right horizon
-	if (angle < HALF_PI) newBall.quadrant = 1
-	else if (angle < PI) newBall.quadrant = 2
+	if (angle < HALF_PI) newBall.quadrant = 1;
+	else if (angle < PI) newBall.quadrant = 2;
 	else if (angle < PI + HALF_PI) newBall.quadrant = 3;
 	else newBall.quadrant = 4;
 	
-	// k > 0 rising, k < 0 falling
+	// k > 0 rising, k < 0 falling (valuewise)
 	newBall.k = tan(angle);
+	
+	// compute the normalized (length == 1) vector
+	// special case: 0 and 180 degrees (1, 0) and (-1, 0)
+	if (angle == 0) {
+		newBall.v.x = 1.0;
+		newBall.v.y = 0;
+	} else if (angle == PI) {
+		newBall.v.x = -1.0;
+		newBall.v.y = 0;
+	} else {	
+		// the normalized vector stems from the linear equation, which is now valid
+		newBall.v.x = 1.0;
+		newBall.v.y = newBall.k;
+	
+		switch (newBall.quadrant) {
+			case 2:
+			case 3:
+			// down, left and up, left need special treatment
+			newBall.v.x *= -1.0;
+			newBall.v.y *= -1.0;
+			break;
+		}
+	
+		// normalize the vector
+		double norm = euclidDist({0.0, 0.0}, newBall.v);
+		newBall.v.x *= (1 / norm);
+		newBall.v.y *= (1 / norm);
+	}
 	
 	return newBall;
 }
 
-inline pointXY_t ballPath(double progess) {
-	// return ball path along progress, 1 being right, 0 being left
-	if (ball.angle == 0 || ball.angle == PI) {
-		// special case 90 degrees, intersect is infinity
-		return {round(15.0 * ballProgress), ball.start.y};
-	}
-	double pathLength = 0.0;
-	ballVector_t particle = ball;
-	pointXY_t intersectPoint;
-	do {
-		double mirror = 0.0;
-		intersectPoint = {0.0, 0.0};
-		switch (particle.quadrant) {
-			case 1:
-			case 2:
-				// upper left or right
-				intersectPoint.y = 0;
-				break;
-			case 3:
-			case 4:
-				// lower left or right
-				intersectPoint.y = 15;
-				break;
-		}
-		intersectPoint.x = intersectBallVector(particle, intersectPoint.y);
-		// todo path length is distance to vert. edge of field only!
-		pathLength += euclidDist(particle.start, intersectPoint);
-		// at intersection, calculate bounce by mirroring vertically (180 - angle)
-		particle = ballVector(intersectPoint, PI - particle.angle);
-	} while (intersectPoint.x >= 0.0 && intersectPoint.x <= 15.0);
-	// todo maybe add caching, calculate this only once
-	
-	
+void addWaypoint(waypoint_t *path, uint8_t *pathIndex, double distance, ballVector_t bV) {
+	path[*pathIndex].distance = distance;
+	path[*pathIndex].bV = bV;
+	(*pathIndex)++;
 }
 
-inline void runAnimations() {
+bool calculateBallPath() {
+	// return ball path, starting at ball
+	double pathLength = 0.0;
+	ballVector_t particle = ball;
+	pointXY_t intersectPoint = particle.start;
+	ballVector_t intersect;
+	bool sideHit;
+	uint8_t pathIndex = 0;
+	// add start to path
+	addWaypoint(ballPath, &pathIndex, pathLength, particle);
+	do {
+		ballVector_t xIntersect;
+		ballVector_t yIntersect;
+		// Prepare intersect box
+		switch (particle.quadrant) {
+			case 1:
+				// down, right
+				xIntersect.start.x = neoMatrix.width() - 1;
+				yIntersect.start.y = neoMatrix.height() - 1;
+				break;
+			case 2:
+				// down, left
+				xIntersect.start.x = 0;
+				yIntersect.start.y = neoMatrix.height() - 1;
+				break;
+			case 3:
+				// up, left
+				xIntersect.start.x = 0;
+				yIntersect.start.y = 0;
+				break;
+			case 4:
+				// up, right
+				xIntersect.start.x = neoMatrix.width() - 1;
+				yIntersect.start.y = 0;
+				break;
+		}
+		
+		// calculate intersection point, calculate bounce
+		xIntersect = xIntersectBallVector(particle, xIntersect.start);
+		yIntersect = yIntersectBallVector(particle, yIntersect.start);
+		
+		// The ball hits first whichever point lies still within the box
+		sideHit = isPointInMatrix(xIntersect.start);
+		if (sideHit) {
+			// Hits side
+			intersect = xIntersect;
+		} else if (isPointInMatrix(yIntersect.start)) {
+			// Hits top or bottom
+			intersect = yIntersect;
+		}
+
+		// path length then sums distance traveled to this intersection point
+		pathLength += euclidDist(particle.start, intersect.start);
+		
+		// apply new solution
+		particle = intersect;
+		
+		// add to path
+		addWaypoint(ballPath, &pathIndex, pathLength, particle);
+	} while (!sideHit && pathIndex < sizeof(ballPath) / sizeof(ballPath[0]));
+	
+	// save the length
+	ballPathLength = pathIndex;
+	
+	// TODO maybe convert all the vector madness to pointers to save space and time for copies
+	
+	return sideHit;
+}
+
+pointXY_t alongBallPath(double progress) {
+	// return where the ball is, according to the progress
+	uint8_t pathIndex = 1;
+	
+	// get ball position at
+	double distance = ballPath[ballPathLength - 1].distance * progress;
+	
+	// advance until preceding section contains ball
+	while (ballPath[pathIndex].distance < distance && pathIndex < ballPathLength) pathIndex++;
+	
+	// Adjust distance to be from the precinct waypoint
+	distance = distance - ballPath[pathIndex - 1].distance;
+	
+	// apply unit vector scaling, i.e. project path
+	return {ballPath[pathIndex - 1].bV.start.x + ballPath[pathIndex - 1].bV.v.x * distance, ballPath[pathIndex - 1].bV.start.y + ballPath[pathIndex - 1].bV.v.y * distance};
+}
+
+void runAnimations() {
 	double span;
 	double relVal;
 
@@ -319,8 +437,6 @@ inline void runAnimations() {
 	relVal = min(1.0, abs(avgAnalog - sample) * 2.0 / span);
 	
 	neoMatrix.fillScreen(0);
-	
-
 	
 	switch (aniState) {
 		case ANI1:
@@ -357,42 +473,43 @@ inline void runAnimations() {
 			if (last_ani_trg_count != ani_trg_count) {
 				// A trigger has happened since the last time
 				last_ani_trg_count = ani_trg_count;
-				// reverse, so mirror start or target
 				
-				
-				
-				paddleHitOffset = (-1.0 + ((double) random(20)) / 10.0);
-				if (ani_trg_count % 2) {
-					// was right-to-left, reverse; rightY changes
-					ballRightY = ballRightY + (ballLeftY - ballRightY) * 2.0;
-					ballRightY = max(ballRightY, 1.0);
-					ballRightY = min(ballRightY, 9.0);
+				// Set ball at the intersection and calculate new angle, add random "paddle" offset
+				// angle needs to be between +- 36 degrees
+				double rndDeg = (double) random(72);
+				if (ballPath[ballPathLength - 1].bV.start.x < 0.5) {
+					// left side
+					if (rndDeg < 36.0) rndDeg += 324;
+					else rndDeg -= 36;
 				} else {
-					// was left-to-right, reverse; leftY changes
-					ballLeftY = ballLeftY + (ballRightY - ballLeftY) * 2.0;
-					ballLeftY = max(ballLeftY, 1.0);
-					ballLeftY = min(ballLeftY, 9.0);
+					// right side
+					rndDeg += 144;
 				}
+				ball = ballVector(ballPath[ballPathLength - 1].bV.start, radians(rndDeg));
+				
+				// calculate the new path
+				calculateBallPath();
+				
+				
 			}
 			// Net
 			neoMatrix.drawFastVLine(7, 0, neoMatrix.height(), neoMatrix.Color(100, 100, 100));
 			neoMatrix.drawFastVLine(8, 0, neoMatrix.height(), neoMatrix.Color(100, 100, 100));
 			// Players
-			neoMatrix.drawLine(0, round(ballLeftY - 1), 0, round(ballLeftY + 1), neoMatrix.Color(255, 255, 255));
-			neoMatrix.drawLine(15, round(ballRightY - 1), 15, round(ballRightY + 1), neoMatrix.Color(255, 255, 255));
+			neoMatrix.drawLine(round(ballPath[0].bV.start.x), round(ballPath[0].bV.start.y - 1), round(ballPath[0].bV.start.x), round(ballPath[0].bV.start.y + 1), neoMatrix.Color(255, 255, 255));
+			neoMatrix.drawLine(round(ballPath[ballPathLength - 1].bV.start.x), round(ballPath[ballPathLength - 1].bV.start.y - 1), round(ballPath[ballPathLength - 1].bV.start.x), round(ballPath[ballPathLength - 1].bV.start.y + 1), neoMatrix.Color(255, 255, 255));
 			// Ball
-			// ballProgress is left-to-right (0.0 = left, 1.0 = right)
-			ballProgress = ((last_trigger + avg_trigger_interval) - now) / ((double) avg_trigger_interval);
-			if (ani_trg_count % 2) ballProgress = 1.0 - ballProgress;
-			
-			neoMatrix.drawPixel(round(15.0 * ballProgress), round(ballLeftY + (ballRightY - ballLeftY) * ballProgress), aniColor);
-			saveAniParams(round(15.0 * ballProgress), round(ballLeftY + (ballRightY - ballLeftY) * ballProgress), aniColor);
+			ballProgress = (now - last_trigger) / ((double) avg_trigger_interval);
+			ballProgress = min(1.0, ballProgress);
+			ballPos = alongBallPath(ballProgress);
+			neoMatrix.drawPixel(round(ballPos.x), round(ballPos.y), aniColor);
+			saveAniParams(round(ballPos.x), round(ballPos.y), aniColor);
 			break;
 	}
 	saveAniState();
 }
 
-inline void printDebugInfo() {
+void printDebugInfo() {
 	// Serial debug info
 	Serial.print("avgAnalog = ");
 	Serial.print(avgAnalog);
@@ -408,7 +525,7 @@ inline void printDebugInfo() {
 	Serial.println(avg_max - avg_min);
 }
 
-inline void runSystem() {
+void runSystem() {
 	sysState_t oldState = sysState;
 	int pxAvg;
 	int pxMin;
