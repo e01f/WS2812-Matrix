@@ -28,7 +28,7 @@ Adafruit_NeoMatrix neoMatrix = Adafruit_NeoMatrix(16, 11, LED_PIN, NEO_MATRIX_TO
 enum sysState_e {SYS_INIT, SYS_SHOWCAPTION, SYS_SHOWCAPTION_WAIT, SYS_INFO, SYS_INFO_WAIT, SYS_INFO_DRAW, SYS_ANI_WAIT, SYS_ANI};
 typedef enum sysState_e sysState_t;
 
-enum aniState_e {ANI_OFF, ANI1, ANI2, ANI3, ANI4, ANI_MODE_NUM};
+enum aniState_e {ANI_OFF, ANI1, ANI2, ANI3, ANI4, ANI5, ANI_MODE_NUM};
 typedef enum aniState_e aniState_t;
 
 struct pointXY_s {
@@ -95,6 +95,8 @@ pointXY_t ballPos;
 // start -> [top/bottom 1 -> [top/bottom 2 ->]] sidewall
 waypoint_t ballPath[4];
 uint8_t ballPathLength;
+
+double vuValues[16];
 
 const double trigger_factor = 0.7;
 
@@ -489,8 +491,6 @@ void runAnimations() {
 				
 				// calculate the new path
 				calculateBallPath();
-				
-				
 			}
 			// Net
 			neoMatrix.drawFastVLine(7, 0, neoMatrix.height(), neoMatrix.Color(100, 100, 100));
@@ -504,6 +504,48 @@ void runAnimations() {
 			ballPos = alongBallPath(ballProgress);
 			neoMatrix.drawPixel(round(ballPos.x), round(ballPos.y), aniColor);
 			saveAniParams(round(ballPos.x), round(ballPos.y), aniColor);
+			break;
+		case ANI5:
+			// VU-Meter animation
+			// each trigger sets high and generate random peaks and lows 30..100%
+			if (last_ani_trg_count != ani_trg_count) {
+				// A trigger has happened since the last time
+				last_ani_trg_count = ani_trg_count;
+				for (int i = 0; i < sizeof(vuValues) / sizeof(vuValues[0]); i++) {
+					vuValues[i] = 0.3 + ((double) random(100)) / 100.0;
+					// so it has to do with sound
+					vuValues[i] *= 0.75 + relVal / 4.0;
+					//vuValues[i] = log10(1.0 + vuValues[i] * 9.0);
+				}
+			}
+			//double decay = 1.0 - (now - last_trigger) / ((double) avg_trigger_interval);
+			double decay = 1.0 - log10(1 + (now - last_trigger) / ((double) avg_trigger_interval));
+			decay = max(0.0, decay);
+			int j = 0;
+			for (int i = 0; i < sizeof(vuValues) / sizeof(vuValues[0]); i++) {
+				int vuValue = round(vuValues[i] * decay * neoMatrix.height());
+				if (i >= 1 && i <= 5) {
+					// saveAniParams(), simplified...
+					aniParams[i] = vuValue;
+				}
+				//j++;
+				if (vuValue <= 0) continue;
+				// 3 red, 3 yellow, 5 green
+				uint8_t h = neoMatrix.height() - 1;
+				neoMatrix.drawLine(i + j, h, i + j, h - min(5, vuValue) + 1, neoMatrix.Color(0, 255, 0));
+				//neoMatrix.drawLine(i + j + 1, h, i + j + 1, h - min(5, vuValue) + 1, neoMatrix.Color(0, 255, 0));
+				h -= 5;
+				vuValue -= 5;
+				if (vuValue <= 0) continue;
+				neoMatrix.drawLine(i + j, h, i + j, h - min(3, vuValue) + 1, neoMatrix.Color(255, 200, 0));
+				//neoMatrix.drawLine(i + j + 1, h, i + j + 1, h - min(3, vuValue) + 1, neoMatrix.Color(255, 200, 0));
+				h -= 3;
+				vuValue -= 3;
+				if (vuValue <= 0) continue;
+				neoMatrix.drawLine(i + j, h, i + j, h - min(3, vuValue) + 1, neoMatrix.Color(255, 0, 0));
+				//neoMatrix.drawLine(i + j + 1, h, i + j + 1, h - min(3, vuValue) + 1, neoMatrix.Color(255, 0, 0));
+				
+			}
 			break;
 	}
 	saveAniState();
