@@ -28,7 +28,7 @@ Adafruit_NeoMatrix neoMatrix = Adafruit_NeoMatrix(16, 11, LED_PIN, NEO_MATRIX_TO
 enum sysState_e {SYS_INIT, SYS_SHOWCAPTION, SYS_SHOWCAPTION_WAIT, SYS_INFO, SYS_INFO_WAIT, SYS_INFO_DRAW, SYS_ANI_WAIT, SYS_ANI};
 typedef enum sysState_e sysState_t;
 
-enum aniState_e {ANI_OFF, ANI1, ANI2, ANI3, ANI4, ANI5, ANI_MODE_NUM};
+enum aniState_e {ANI_OFF, ANI1, ANI2, ANI3, ANI4, ANI5, ANI6, ANI7, ANI8, ANI_MODE_NUM};
 typedef enum aniState_e aniState_t;
 
 struct pointXY_s {
@@ -434,6 +434,7 @@ void runAnimations() {
 	uint16_t oldAniColor;
 
 	double ballProgress;
+	double decay;
 	
 	span = avg_max - avg_min;
 	relVal = min(1.0, abs(avgAnalog - sample) * 2.0 / span);
@@ -519,9 +520,8 @@ void runAnimations() {
 				}
 			}
 			//double decay = 1.0 - (now - last_trigger) / ((double) avg_trigger_interval);
-			double decay = 1.0 - log10(1 + (now - last_trigger) / ((double) avg_trigger_interval));
+			decay = 1.0 - log10(1 + (now - last_trigger) / ((double) avg_trigger_interval));
 			decay = max(0.0, decay);
-			int j = 0;
 			for (int i = 0; i < sizeof(vuValues) / sizeof(vuValues[0]); i++) {
 				int vuValue = round(vuValues[i] * decay * neoMatrix.height());
 				if (i >= 1 && i <= 5) {
@@ -532,20 +532,37 @@ void runAnimations() {
 				if (vuValue <= 0) continue;
 				// 3 red, 3 yellow, 5 green
 				uint8_t h = neoMatrix.height() - 1;
-				neoMatrix.drawLine(i + j, h, i + j, h - min(5, vuValue) + 1, neoMatrix.Color(0, 255, 0));
-				//neoMatrix.drawLine(i + j + 1, h, i + j + 1, h - min(5, vuValue) + 1, neoMatrix.Color(0, 255, 0));
+				neoMatrix.drawLine(i, h, i, h - min(5, vuValue) + 1, neoMatrix.Color(0, 255, 0));
 				h -= 5;
 				vuValue -= 5;
 				if (vuValue <= 0) continue;
-				neoMatrix.drawLine(i + j, h, i + j, h - min(3, vuValue) + 1, neoMatrix.Color(255, 200, 0));
-				//neoMatrix.drawLine(i + j + 1, h, i + j + 1, h - min(3, vuValue) + 1, neoMatrix.Color(255, 200, 0));
+				neoMatrix.drawLine(i, h, i, h - min(3, vuValue) + 1, neoMatrix.Color(255, 200, 0));
 				h -= 3;
 				vuValue -= 3;
 				if (vuValue <= 0) continue;
-				neoMatrix.drawLine(i + j, h, i + j, h - min(3, vuValue) + 1, neoMatrix.Color(255, 0, 0));
-				//neoMatrix.drawLine(i + j + 1, h, i + j + 1, h - min(3, vuValue) + 1, neoMatrix.Color(255, 0, 0));
-				
+				neoMatrix.drawLine(i, h, i, h - min(3, vuValue) + 1, neoMatrix.Color(255, 0, 0));
 			}
+			break;
+		case ANI6:
+			// flash to the beat
+			decay = 1.0 - (now - last_trigger) / ((double) avg_trigger_interval);
+			decay = max(0.0, decay);
+			if (decay > 0.30) {
+				neoMatrix.fillScreen(neoMatrix.Color(255, 255, 255));
+			}
+			saveAniParams(decay > 0.66);
+			break;
+		case ANI7:
+			// fixed, 120ms 50% duty cycle strobes
+			if (now % 120 < 60) {
+				neoMatrix.fillScreen(neoMatrix.Color(255, 255, 255));
+			}
+			saveAniParams(now % 120 < 60);
+			break;
+		case ANI8:
+			// color change on every beat
+			neoMatrix.fillScreen(aniColor);
+			saveAniParams(aniColor);
 			break;
 	}
 	saveAniState();
